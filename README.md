@@ -75,6 +75,7 @@ cp .env.example .env.local
 *Note: AuditMind operates fully out of the box in local standalone mode without any API keys!*
 
 - If `OPENAI_API_KEY` is provided, live GPT-4o structured tool calling is enabled. If omitted, the local rule-grounded tool engine runs automatically.
+- If `HINDSIGHT_API_KEY` is provided, assistant conversations are retained in an organization-scoped Hindsight memory bank and relevant memories are recalled before live OpenAI responses. Hindsight is optional; the local grounded engine continues to work without it. Set `HINDSIGHT_API_URL` for a self-hosted Hindsight deployment.
 - If `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided, Supabase PostgreSQL is connected.
 
 ### 4. Running the Development Server

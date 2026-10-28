@@ -8,6 +8,7 @@
 import { dbRepository } from '../db/sqlite-store';
 import { auditMemoryService } from './audit-memory';
 import { runDeterministicComplianceChecks } from './compliance-engine';
+import { formatHindsightContext, hindsightMemoryService } from './hindsight-memory';
 import { AIMessage, AICitation } from '@/types';
 
 export interface AssistantResponse {
@@ -375,19 +376,44 @@ export async function processAIComplianceQuery(
   history: AIMessage[] = []
 ): Promise<AssistantResponse> {
   const apiKey = process.env.OPENAI_API_KEY;
+  let hindsightContext = '';
 
-  if (apiKey) {
+  if (hindsightMemoryService.isConfigured()) {
     try {
-      return await callLiveOpenAI(userQuery, orgId, history, apiKey);
+      const memories = await hindsightMemoryService.recall(orgId, userQuery);
+      hindsightContext = formatHindsightContext(memories);
     } catch (err) {
-      console.error('OpenAI API call failed, falling back to Grounded Engine:', err);
-      // Fallback seamlessly to local grounded engine
-      return runLocalGroundedEngine(userQuery, orgId);
+      console.error('Hindsight recall failed; continuing with database-grounded context:', err);
     }
   }
 
+  if (apiKey) {
+    let response: AssistantResponse;
+    try {
+      response = await callLiveOpenAI(userQuery, orgId, history, apiKey, hindsightContext);
+    } catch (err) {
+      console.error('OpenAI API call failed, falling back to Grounded Engine:', err);
+      // Fallback seamlessly to local grounded engine
+      response = runLocalGroundedEngine(userQuery, orgId);
+    }
+    await retainHindsightConversation(orgId, userQuery, response.message.content);
+    return response;
+  }
+
   // Standalone mode: Local Grounded Compliance Engine
-  return runLocalGroundedEngine(userQuery, orgId);
+  const response = runLocalGroundedEngine(userQuery, orgId);
+  await retainHindsightConversation(orgId, userQuery, response.message.content);
+  return response;
+}
+
+async function retainHindsightConversation(orgId: string, userQuery: string, response: string) {
+  if (!hindsightMemoryService.isConfigured()) return;
+
+  try {
+    await hindsightMemoryService.retainConversation(orgId, userQuery, response);
+  } catch (err) {
+    console.error('Hindsight conversation retention failed:', err);
+  }
 }
 
 // ------------------------------------------------------------------------------
@@ -397,7 +423,8 @@ async function callLiveOpenAI(
   userQuery: string,
   orgId: string,
   history: AIMessage[],
-  apiKey: string
+  apiKey: string,
+  hindsightContext = ''
 ): Promise<AssistantResponse> {
   const model = process.env.OPENAI_MODEL || 'gpt-4o';
 
@@ -407,7 +434,7 @@ Rules:
 2. Differentiate confirmed facts from calculated states and unverified claims. For example, if a finding was marked resolved by an owner but lacks a verification test or signoff, explicitly state that remediation is marked complete but verification is missing. Do not assume the control is passing.
 3. Reference record IDs (e.g. AC-001, FND-001) and include markdown links using the URLs provided in tool results.
 4. If a user asks about a record that doesn't exist, state clearly that no record was found.
-5. Do not modify records directly. For actions, use propose_review_task.`;
+5. Do not modify records directly. For actions, use propose_review_task.${hindsightContext}`;
 
   const messages: any[] = [
     { role: 'system', content: systemPrompt },
